@@ -1,5 +1,5 @@
 # Post-contenido — Unidad 6: Antipatrones de Diseño
-
+## Link del repo: https://github.com/DavidRincon12/rincon-post1-u6
 ## Descripción
 
 Repositorio del post-contenido de la Unidad 6 de Patrones de Diseño de Software — Sexto
