@@ -10,7 +10,7 @@ antipatrones en un sistema de gestión de pedidos de comercio electrónico.
 ### Parte 1 — Diagnóstico de `GestorPedidos`
 
 > Las líneas citadas corresponden a
-> [`GestorPedidos.java` en el commit del código de partida](src/main/java/com/tienda/pedidos/service/GestorPedidos.java),
+> [`GestorPedidos.java` en el commit del código de partida](https://github.com/DavidRincon12/rincon-post1-u6/blob/6eca164224ade19d7c22c3677b0f927934aa5350/src/main/java/com/tienda/pedidos/service/GestorPedidos.java),
 > antes de cualquier refactorización.
 
 **Antipatrón identificado: God Object y Spaghetti Code combinados.**
@@ -65,6 +65,69 @@ Agregar un tipo de cliente con reglas de descuento propias (p. ej. `CORPORATIVO`
 necesita datos de la base, a escribir otra consulta SQL dentro de esa rama. No se puede probar
 la regla nueva sin levantar la base de datos ni el servicio de correo, porque todo vive en el
 mismo método. Es una violación directa de OCP y SRP.
+
+### Parte 1 — Refactorización aplicada
+
+`GestorPedidos` quedó dividido en cuatro capas cohesivas y actúa solo como orquestador
+(`procesarPedido()` pasó de ~106 líneas a 18):
+
+```
+GestorPedidos (orquestador)
+├── validacion/  ValidadorPedido ← ValidadorStock → ValidadorCliente   (Chain of Responsibility)
+├── descuento/   EstrategiaDescuento ← DescuentoVip | DescuentoFrecuente | DescuentoEstandar
+│                SelectorEstrategiaDescuento                            (Strategy + fábrica simple)
+├── service/     PedidoRepository, ProductoRepository                  (persistencia)
+└── service/     NotificacionPedidoService → EmailService              (notificación)
+```
+
+**Patrón aplicado — validaciones como Chain of Responsibility.** Las validaciones tienen una
+dependencia de orden real y necesitan corte anticipado: si `ValidadorStock` rechaza el pedido,
+`ValidadorCliente` ni siquiera debe consultar la mora. Cada eslabón tiene un único motivo de
+rechazo y se prueba por separado.
+*Alternativa descartada:* un método `validarTodo()` con una lista de `Predicate<ContextoPedido>`.
+Evalúa todos los predicados aunque el primero ya falló y no permite que un validador decida no
+delegar al siguiente, que es justo el corte anticipado que la cadena ofrece.
+
+**Patrón aplicado — descuento como Strategy (y no como otro eslabón de la cadena).** Las reglas
+de descuento no dependen de un orden entre sí ni cortan el flujo: siempre se aplica exactamente
+una regla según el tipo de cliente. Un `Map<String, EstrategiaDescuento>` en
+`SelectorEstrategiaDescuento` reemplaza el `if/else if` anidado; agregar un tipo de cliente es
+crear una clase nueva y registrarla, sin tocar las existentes (OCP).
+*Alternativa descartada:* modelar cada descuento como eslabón de la cadena. Habría obligado a
+inventar un mecanismo para garantizar que solo un eslabón fije el descuento, con más indirección
+y sin ganar nada.
+
+**Persistencia y notificación.** `PedidoRepository` (`@Repository`) es el único que conoce las
+tablas `pedidos`, `detalle_pedido` e `inventario` para escribir; `ProductoRepository` saca la
+consulta de precios del cálculo del subtotal, que queda como lógica pura en `GestorPedidos`;
+`NotificacionPedidoService` (`@Service`) arma el correo y absorbe sus fallos. Todo con inyección
+por constructor en lugar de `@Autowired` sobre campos.
+
+**Corrección sobre el código de referencia de la guía.** La guía escribe
+`this.primerValidador = stock.encadenar(cliente)`, pero `encadenar()` devuelve el *siguiente*
+eslabón, así que la cadena empezaría en `ValidadorCliente` y el stock nunca se validaría. Aquí se
+encadena primero y se guarda `stock` como primer validador; la prueba
+`rechazaPorStockInsuficiente` lo cubre.
+
+#### Comparación antes / después (Parte 1)
+
+Los mismos 11 pedidos de `GestorPedidosTest` se ejecutaron contra el `GestorPedidos` original
+(commit `test: agregar pedidos de prueba…`) y contra la versión refactorizada, sin cambiar una sola
+aserción. Ambos producen:
+
+| Caso | Cliente | Pedido | Resultado (antes = después) |
+|---|---|---|---|
+| Sin ítems | ESTANDAR | — | Rechazado: "El pedido no contiene items" |
+| Stock insuficiente | VIP | 5 sillas (stock 2) | Rechazado: "Stock insuficiente: producto 4" |
+| Cliente inexistente | id 99 | 1 teclado | Rechazado: "Cliente no registrado" |
+| Moroso 19:59 | MOROSO | 2 cables | Rechazado: "Cliente con deuda pendiente: $150000.0" |
+| Moroso 20:00 | MOROSO | 2 cables | Confirmado, total $23.800 (sin descuento) |
+| VIP > $1.000.000 | VIP | 2 monitores | Confirmado, 15 %, total $1.213.800 |
+| VIP > $500.000 | VIP | 1 monitor | Confirmado, 10 %, total $642.600 |
+| VIP resto | VIP | 1 teclado | Confirmado, 5 %, total $113.050 |
+| Frecuente (5 previos) | FRECUENTE | 2 teclados | Confirmado, 4 %, total $228.480 |
+| Estándar | ESTANDAR | 1 cable | Confirmado, total $11.900 |
+| Persistencia y correo | VIP | 1 teclado + 3 cables | 2 filas de detalle, stock descontado, 1 correo con "Descuento aplicado: 5%" |
 
 ### Ajustes mínimos al código de partida
 
