@@ -142,6 +142,61 @@ cambian su comportamiento observable**:
    el código original.
 3. La base H2 corre en `MODE=LEGACY` porque H2 2.x retiró `CALL IDENTITY()` del modo por defecto.
 
+### Parte 2 — Diagnóstico del crecimiento: tres campañas como eslabones de la cadena
+
+> Las líneas citadas corresponden al
+> [commit `feat: agregar 3 campanas de descuento como eslabones…`](https://github.com/DavidRincon12/rincon-post1-u6/tree/232e0dc2635849bc112308b70363af4a627f5d6b/src/main/java/com/tienda/pedidos),
+> antes de corregir el diseño.
+
+Mercadeo pidió tres campañas: **BLACK_FRIDAY** (25 % fijo mientras
+`promo.black-friday.activa=true`), **CORPORATIVO** (10 % si el cliente tiene NIT) y **VOLUMEN**
+(12 % si el pedido supera 20 unidades). Se resolvieron como tres subclases de `ValidadorPedido`
+(`PromocionBlackFriday`, `PromocionCorporativo`, `PromocionVolumen`) enganchadas al final de la
+cadena en `GestorPedidos` (líneas 37-38):
+
+```java
+stock.encadenar(cliente)
+    .encadenar(blackFriday).encadenar(corporativo).encadenar(volumen);
+```
+
+El código compila y las campañas funcionan (`CampanasDescuentoTest` y `CampanaBlackFridayTest`
+pasan). El problema es de diseño.
+
+**Antipatrón identificado: Golden Hammer.** Se reutilizó Chain of Responsibility porque "ya
+funcionó" en la Parte 1, sin comprobar que el problema nuevo tuviera la misma forma. La evidencia:
+
+1. **No hay dependencia de orden entre las tres campañas ni con los validadores.** Cada una lee
+   datos independientes (una bandera, el NIT, la suma de cantidades) y llama a
+   `aplicarDescuentoCampana()`, que se queda con el máximo (`ContextoPedido`, líneas 27-29).
+   El máximo es conmutativo: ejecutar `PromocionVolumen` antes que `PromocionCorporativo` da el
+   mismo resultado. En cambio `ValidadorStock` *sí* debe ir antes que `ValidadorCliente`. La
+   propiedad que justificaba la cadena (orden + corte anticipado) no existe aquí.
+2. **Ninguna de las tres usa el corte anticipado.** El contrato de `ValidadorPedido`
+   (línea 3: *"cada validador decide si el pedido continúa o se rechaza"*) se rompe:
+   `PromocionBlackFriday` lo declara en su propio comentario (líneas 22-23: *"nunca rechaza --
+   este eslabón no valida nada"*), y las otras dos tampoco llaman a `rechazar()` nunca. Son
+   cálculos de porcentaje con nombre y herencia de validador.
+3. **El contexto se volvió un buzón compartido.** Hizo falta un campo mutable nuevo,
+   `descuentoCampana` (`ContextoPedido`, línea 13), para que eslabones que no validan nada
+   pudieran devolver un valor. El cálculo del descuento quedó partido en dos lugares: la cadena
+   escribe `descuentoCampana` y `GestorPedidos` lo combina con el Strategy en la línea 57
+   (`Math.max(descuentoTipoCliente, contexto.getDescuentoCampana())`).
+4. **La regla de combinación está escondida en un setter.** "El mayor gana" vive dentro de
+   `aplicarDescuentoCampana()`. Si mercadeo pide que dos campañas se *sumen*, la cadena no lo
+   permite sin ambigüedad: cada eslabón sobrescribe el mismo campo y no sabe qué escribieron los
+   demás ni en qué orden.
+5. **La cadena corre antes del cálculo de precios.** Cuando se ejecutan los eslabones,
+   `contexto.getSubtotal()` aún vale `0` (el subtotal se calcula después, línea 52). Por eso
+   `PromocionVolumen` recalcula las unidades desde el request (líneas 12-13) y ninguna campaña
+   podría depender del monto del pedido. Es una señal de que el descuento está en la etapa
+   equivocada del flujo.
+6. **Duplicación de consultas.** `PromocionCorporativo` vuelve a consultar la tabla `clientes`
+   (líneas 18-19) aunque `ValidadorCliente` ya lo hizo en la misma cadena.
+
+En cambio, las tres campañas tienen exactamente la forma de `DescuentoVip` y
+`DescuentoFrecuente`: calculan un porcentaje a partir de datos del pedido o del cliente, sin
+orden y sin cortar el flujo. El patrón que ya existía para esa forma era Strategy.
+
 ## Cómo ejecutar
 
 ```bash
