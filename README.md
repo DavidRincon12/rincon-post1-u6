@@ -2,8 +2,32 @@
 
 ## Descripción
 
-Proyecto Spring Boot `pedidos-service` (groupId `com.tienda`) para diagnosticar y refactorizar
-antipatrones en un sistema de gestión de pedidos de comercio electrónico.
+Repositorio del post-contenido de la Unidad 6 de Patrones de Diseño de Software — Sexto
+Semestre. Un único proyecto Spring Boot (`pedidos-service`, groupId `com.tienda`, en la raíz del
+repositorio) con dos partes:
+
+1. Diagnóstico y refactorización de un antipatrón combinado (God Object + Spaghetti Code) en
+   `GestorPedidos`, aplicando Chain of Responsibility y Strategy.
+2. Diagnóstico y corrección de un segundo antipatrón (Golden Hammer) introducido al hacer crecer
+   el mismo proyecto con tres campañas de descuento.
+
+El historial de commits refleja el proceso completo: código de partida → pruebas que fijan el
+comportamiento → diagnóstico → refactorización, y lo mismo para la Parte 2.
+
+### Estructura final
+
+```
+src/main/java/com/tienda/pedidos/
+├── PedidosServiceApplication.java
+├── config/       RelojConfig                         (Clock inyectable)
+├── dto/          PedidoRequest, ItemPedido, ResultadoPedido
+├── validacion/   ContextoPedido, ValidadorPedido, ValidadorStock, ValidadorCliente
+├── descuento/    EstrategiaDescuento, DescuentoVip, DescuentoFrecuente, DescuentoEstandar,
+│                 SelectorEstrategiaDescuento, DescuentoBlackFriday, DescuentoCorporativo,
+│                 DescuentoVolumen, CalculadorDescuentoFinal
+└── service/      GestorPedidos, PedidoRepository, ProductoRepository,
+                  NotificacionPedidoService, EmailService, EmailServiceConsola
+```
 
 ## Decisiones de diseño
 
@@ -197,9 +221,93 @@ En cambio, las tres campañas tienen exactamente la forma de `DescuentoVip` y
 `DescuentoFrecuente`: calculan un porcentaje a partir de datos del pedido o del cliente, sin
 orden y sin cortar el flujo. El patrón que ya existía para esa forma era Strategy.
 
+### Parte 2 — Corrección aplicada
+
+**Patrón aplicado: Strategy, extendiendo el que ya existía desde la Parte 1.** Las campañas
+pasaron a ser `DescuentoBlackFriday`, `DescuentoCorporativo` y `DescuentoVolumen`, todas
+implementaciones de `EstrategiaDescuento`. `CalculadorDescuentoFinal` reúne la estrategia por tipo
+de cliente (vía `SelectorEstrategiaDescuento`) y las campañas, y aplica la regla de negocio
+"gana el mayor" en un solo lugar:
+
+```java
+double porTipoCliente = selectorPorCliente.seleccionar(contexto.getTipoCliente()).calcular(contexto);
+double porCampana = campanas.stream().mapToDouble(e -> e.calcular(contexto)).max().orElse(0.0);
+return Math.max(porTipoCliente, porCampana);
+```
+
+Resultado:
+
+- `ValidadorPedido` vuelve a tener solo los dos eslabones que justifican la cadena:
+  `ValidadorStock → ValidadorCliente`.
+- `GestorPedidos` delega todo el descuento en `CalculadorDescuentoFinal`, que se ejecuta
+  **después** de calcular el subtotal, así que una campaña futura sí podría depender del monto.
+- `ContextoPedido` vuelve a su forma original: sin `descuentoCampana`.
+- Si mañana dos campañas deben sumarse, el cambio es una línea en `CalculadorDescuentoFinal`
+  (`sum()` en vez de `max()`), visible y probada de forma unitaria en
+  `CalculadorDescuentoFinalTest`.
+
+*Alternativa descartada:* mantener las campañas en la cadena. Es justamente la causa del
+antipatrón: reutilizar una herramienta conocida sin verificar que el problema nuevo tuviera su
+misma forma (orden y corte anticipado).
+
+**Eliminar, no comentar, el código descartado.** `PromocionBlackFriday`, `PromocionCorporativo`,
+`PromocionVolumen` y el campo `descuentoCampana` se borraron por completo con `git rm`, no se
+dejaron comentados "por si acaso". El código comentado que nadie se atreve a borrar es como nace
+un Lava Flow; la referencia histórica queda en los commits `feat: agregar 3 campanas…` y
+`docs: diagnosticar Golden Hammer…`, no en el código activo.
+
+#### Comparación antes / después (Parte 2)
+
+`CampanasDescuentoTest` y `CampanaBlackFridayTest` se escribieron contra la versión con los tres
+eslabones (Golden Hammer) y se ejecutaron sin modificar ninguna aserción contra la versión
+corregida. Los 11 pedidos de la Parte 1 también siguen dando lo mismo.
+
+| Caso | Cliente | Pedido | Descuento | Total (cadena = Strategy) |
+|---|---|---|---|---|
+| Corporativo | ESTANDAR con NIT | 1 cable | 10 % | $10.710 |
+| Volumen | ESTANDAR | 21 cables | 12 % | $219.912 |
+| Volumen en el límite | ESTANDAR | 20 cables | 0 % | $238.000 |
+| Volumen con varios ítems | ESTANDAR | 15 + 6 cables | 12 % | $219.912 |
+| Volumen vs VIP 5 % | VIP | 25 cables | 12 % | $261.800 |
+| VIP 15 % vs volumen | VIP | 2 monitores + 21 cables | 15 % | $1.426.215 |
+| Corporativo + volumen | ESTANDAR con NIT | 21 cables | 12 % (no 22 %) | $219.912 |
+| Black Friday | ESTANDAR | 1 cable | 25 % | $8.925 |
+| Black Friday vs VIP 15 % | VIP | 2 monitores | 25 % | $1.071.000 |
+| Black Friday a moroso 20:30 | MOROSO | 2 cables | 25 % | $17.850 |
+| Black Friday a moroso 10:00 | MOROSO | 2 cables | — | Rechazado: deuda pendiente |
+
+```
+Tests run: 31, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+```
+
 ## Cómo ejecutar
+
+Requisitos: JDK 17 o superior y Maven 3.8+.
 
 ```bash
 mvn spring-boot:run
 mvn test
 ```
+
+La base H2 en memoria se crea y se llena al arrancar con `schema.sql` y `data.sql`. La campaña de
+Black Friday se activa con `promo.black-friday.activa=true` en `application.properties` (o con
+`mvn spring-boot:run -Dspring-boot.run.arguments=--promo.black-friday.activa=true`).
+
+## Herramientas utilizadas
+
+- Java 17, Spring Boot 3.5, Spring JDBC (`JdbcTemplate`), Maven, H2 Database
+- JUnit 5 y Spring Boot Test
+- VS Code / IntelliJ IDEA, Git, GitHub
+
+## Conclusiones
+
+Un God Object no se corrige partiéndolo en clases al azar: hay que contar sus razones para
+cambiar y separar por esas razones, y tener pruebas que fijen el comportamiento antes de mover
+una sola línea fue lo que permitió refactorizar con confianza. Cada patrón resuelve un problema
+con una forma concreta: Chain of Responsibility encaja cuando hay orden y corte anticipado, y
+Strategy cuando hay que elegir o combinar reglas independientes. La Parte 2 mostró que el mayor
+riesgo después de una buena refactorización es enamorarse de la solución y aplicarla a todo
+(Golden Hammer), y que la señal de alarma son las clases que heredan un contrato que no cumplen.
+Por último, borrar el código descartado en lugar de comentarlo mantiene el diseño limpio, y el
+historial de Git cuenta mejor que cualquier comentario por qué se tomó cada decisión.
