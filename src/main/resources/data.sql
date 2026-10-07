@@ -12,6 +12,7 @@ INSERT INTO clientes (id, nombre, tipo_cliente) VALUES (1, 'Cliente VIP', 'VIP')
 INSERT INTO clientes (id, nombre, tipo_cliente) VALUES (2, 'Cliente frecuente', 'FRECUENTE');
 INSERT INTO clientes (id, nombre, tipo_cliente) VALUES (3, 'Cliente moroso', 'MOROSO');
 INSERT INTO clientes (id, nombre, tipo_cliente) VALUES (4, 'Cliente estandar', 'ESTANDAR');
+INSERT INTO clientes (id, nombre, tipo_cliente, nit) VALUES (5, 'Empresa cliente', 'ESTANDAR', '900123456-7');
 
 INSERT INTO facturas (cliente_id, monto, pagada) VALUES (3, 150000, false);
 INSERT INTO facturas (cliente_id, monto, pagada) VALUES (3, 80000, true);
